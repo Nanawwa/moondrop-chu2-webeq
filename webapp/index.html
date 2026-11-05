@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" id="meta-theme" content="#faf9f7">
+<title>DSP WebEQ · 水月雨硬件 PEQ</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a1917'/%3E%3Ctext x='16' y='22' font-size='17' font-family='sans-serif' font-weight='600' text-anchor='middle' fill='%23faf9f7'%3E%E7%AB%B9%3C/text%3E%3C/svg%3E">
+<script>
+  // 主题必须在样式之前定下来，避免夜间模式用户看到一闪而过的白屏
+  (function () {
+    var stored = null;
+    try { stored = localStorage.getItem('chu2.theme'); } catch (e) {}
+    var theme = (stored === 'light' || stored === 'dark')
+      ? stored
+      : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    var meta = document.getElementById('meta-theme');
+    if (meta) meta.content = theme === 'dark' ? '#0b0b0c' : '#faf9f7';
+  })();
+</script>
+<script>
+  // 挂在子路径（例如 tailscale serve --set-path /eq）时，/eq 少了结尾斜杠会让 CSS/JS 解析到根上，
+  // 自动补一个斜杠，免得白屏。
+  (function () {
+    var p = location.pathname;
+    if (!/\/$/.test(p) && !/\.html?$/i.test(p)) location.replace(p + '/' + location.search + location.hash);
+  })();
+</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar__inner">
+    <a class="brand" href="./" aria-label="DSP WebEQ 首页">
+      <span class="brand__mark" aria-hidden="true">竹</span>
+      <span class="brand__text">
+        <strong>DSP WebEQ</strong>
+        <span id="brand-sub">CHU2 DSP · 5 段</span>
+      </span>
+    </a>
+
+    <div class="topbar__actions">
+      <span class="status" id="status" data-live="off" aria-live="polite">
+        <span class="status__dot" aria-hidden="true"></span>
+        <span id="status-text">未连接设备</span>
+      </span>
+      <button type="button" class="btn btn--ghost btn--icon" id="btn-theme" aria-label="切换到夜间模式" aria-pressed="false" title="切换到夜间模式">
+        <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
+      <button type="button" class="btn btn--ghost" id="btn-connect">连接设备</button>
+      <button type="button" class="btn btn--accent" id="btn-write" disabled>写入设备</button>
+    </div>
+  </div>
+</header>
+
+<main class="page">
+
+  <!-- ================= 曲线 + 频段 ================= -->
+  <section class="card hero" aria-labelledby="hero-title">
+    <div class="card__head hero__head">
+      <div class="hero__title">
+        <h1 id="hero-title">频率响应</h1>
+        <p class="sub">拖动节点改频率与增益，滚轮改 Q</p>
+      </div>
+      <div class="hero__tools">
+        <div class="peak">
+          <span>峰值</span>
+          <strong id="peak-readout">0.0 dB</strong>
+        </div>
+        <button type="button" class="btn btn--soft btn--sm" id="btn-headroom">自动削峰</button>
+        <button type="button" class="btn btn--soft btn--sm" id="btn-flat">全部归零</button>
+      </div>
+    </div>
+
+    <div class="plot-wrap">
+      <canvas id="plot" aria-label="均衡器频率响应曲线，可拖动节点调整"></canvas>
+    </div>
+
+    <div class="bands" id="bands"></div>
+    <p class="card__foot">硬件范围：增益 ±12 dB · Q 0.1–10 · 频率 20 Hz–20 kHz</p>
+  </section>
+
+  <!-- ================= 右栏 ================= -->
+  <aside class="side">
+
+    <section class="card device" aria-labelledby="device-title">
+      <div class="card__head">
+        <h2 id="device-title">设备</h2>
+        <div class="badges">
+          <span class="badge badge--dirty" id="dirty-badge" hidden>未写入</span>
+          <span class="badge" id="dev-badge" data-state="off">未连接</span>
+        </div>
+      </div>
+      <div class="card__body stack">
+        <div>
+          <div class="device-name" id="dev-name">未连接</div>
+          <div class="device-meta mono" id="dev-meta">VID 0x31B2 · PID 0x0113 · report 0x4B</div>
+        </div>
+
+        <label class="field field--block">机型档案
+          <select id="dev-profile" class="select select--block"></select>
+        </label>
+        <p class="hint" id="profile-note">KT0210 · 5 段 · ±12 dB</p>
+        <p class="device-info mono" id="dev-info"></p>
+
+        <button type="button" class="btn btn--soft btn--block" id="btn-read" disabled>从设备读取</button>
+      </div>
+    </section>
+
+    <section class="card presets" aria-labelledby="presets-title">
+      <div class="card__head card__head--tabs">
+        <h2 id="presets-title">预设</h2>
+        <div class="tabs" role="tablist" aria-label="预设来源">
+          <button type="button" class="tab" role="tab" id="tab-community" aria-selected="true" aria-controls="panel-community" data-tab="community">社区</button>
+          <button type="button" class="tab" role="tab" id="tab-mine" aria-selected="false" aria-controls="panel-mine" data-tab="mine" tabindex="-1">我的</button>
+          <button type="button" class="tab" role="tab" id="tab-import" aria-selected="false" aria-controls="panel-import" data-tab="import" tabindex="-1">导入</button>
+        </div>
+      </div>
+
+      <!-- 社区 -->
+      <div class="panel" id="panel-community" role="tabpanel" aria-labelledby="tab-community">
+        <div class="panel__body">
+          <div class="searchrow">
+            <input type="search" id="search" placeholder="搜索调音标题…" aria-label="搜索社区调音" autocomplete="off">
+            <button type="button" class="btn btn--soft btn--icon" id="btn-search" aria-label="搜索">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
+            </button>
+          </div>
+
+          <div class="toolrow">
+            <select id="sort" class="select" aria-label="排序方式">
+              <option value="downloads" selected>下载量最高</option>
+              <option value="default">最新发布</option>
+              <option value="downloads-asc">下载量最低</option>
+              <option value="likes">点赞最多</option>
+            </select>
+            <button type="button" class="chip" id="btn-official" aria-pressed="false">只看官方</button>
+            <button type="button" class="chip" id="btn-filters" aria-expanded="false" aria-controls="adv-filters">筛选</button>
+          </div>
+
+          <div class="advfilters" id="adv-filters" hidden>
+            <label class="field">最低下载
+              <input type="number" id="min-dl" min="0" step="1" value="0" inputmode="numeric">
+            </label>
+            <label class="field">标签
+              <input type="text" id="tag" placeholder="流行 / R&amp;B" autocomplete="off">
+            </label>
+          </div>
+
+          <div class="rankbar" id="rank-status" role="status" aria-live="polite"></div>
+          <div class="progress" id="rank-progress" hidden aria-hidden="true"><span></span></div>
+
+          <div class="preset-list" id="preset-list" aria-live="polite"></div>
+
+          <div class="pager">
+            <span class="mono muted" id="page-info">—</span>
+            <div class="pager__btns">
+              <button type="button" class="btn btn--soft btn--sm" id="btn-prev" disabled>上一页</button>
+              <button type="button" class="btn btn--soft btn--sm" id="btn-next" disabled>下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 我的 -->
+      <div class="panel" id="panel-mine" role="tabpanel" aria-labelledby="tab-mine" hidden>
+        <div class="panel__body">
+          <div class="mine__head">
+            <p class="muted">保存在这台浏览器里，换设备不同步。</p>
+            <div class="row">
+              <button type="button" class="btn btn--soft btn--sm" id="btn-export">导出当前</button>
+              <button type="button" class="btn btn--sm" id="btn-save-preset">保存当前</button>
+            </div>
+          </div>
+          <div class="preset-list preset-list--plain" id="saved-list"></div>
+        </div>
+      </div>
+
+      <!-- 导入 -->
+      <div class="panel" id="panel-import" role="tabpanel" aria-labelledby="tab-import" hidden>
+        <div class="panel__body stack">
+          <label class="field field--block">粘贴社区链接、uuid、JSON 或 AutoEq 文本
+            <textarea id="import-input" rows="4" placeholder="https://…  /  6772a0d5-3f1c-4567-967a-210e61be2308  /  Filter 1: ON PK Fc 100 Hz Gain -3 dB Q 1.0" spellcheck="false"></textarea>
+          </label>
+          <div class="row">
+            <button type="button" class="btn btn--soft btn--sm" id="btn-import">从文件导入</button>
+            <button type="button" class="btn btn--sm" id="btn-import-eq">识别并应用</button>
+            <input type="file" id="file-import" accept=".json,.txt,application/json,text/plain" class="sr-only">
+          </div>
+          <p class="hint" id="import-hint">支持社区分享链接 / uuid、社区 JSON、本站导出文件、EqualizerAPO / AutoEq 的 ParametricEQ.txt 全文。</p>
+        </div>
+      </div>
+    </section>
+
+  </aside>
+</main>
+
+<footer class="pagefoot">
+  <span>所有数据只保存在这台浏览器</span>
+  <button type="button" class="linkbtn" id="btn-log">查看日志</button>
+</footer>
+
+<!-- ================= 对话框 ================= -->
+<dialog id="dlg-write" class="dialog">
+  <div class="dialog__body">
+    <h2>写入竹二 DSP？</h2>
+    <p id="dlg-write-body">这会把当前 5 段曲线写进耳机并提交保存。提交后设备会重启一次（约 1 秒音频中断），拔掉再插会保留这次的曲线。</p>
+    <div class="dialog__actions">
+      <button type="button" class="btn btn--ghost" id="dlg-cancel">取消</button>
+      <button type="button" class="btn btn--accent" id="dlg-ok">写入并提交</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-save" class="dialog">
+  <div class="dialog__body">
+    <h2>保存到我的预设</h2>
+    <label class="field field--block">名称
+      <input type="text" id="preset-name" maxlength="40" autocomplete="off">
+    </label>
+    <div class="dialog__actions">
+      <button type="button" class="btn btn--ghost" id="save-cancel">取消</button>
+      <button type="button" class="btn btn--primary" id="save-ok">保存</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-preset" class="dialog dialog--preset" aria-labelledby="preset-detail-title">
+  <div class="dialog__body">
+    <h2 id="preset-detail-title">调音详情</h2>
+    <p class="preset-detail__meta" id="preset-detail-meta"></p>
+    <div class="mini-plot"><canvas id="preset-plot" aria-label="这条调音在当前机型上的频响预览"></canvas></div>
+    <p class="preset-detail__desc" id="preset-detail-desc"></p>
+    <div class="detail-bands" id="preset-detail-bands"></div>
+    <div class="dialog__actions">
+      <button type="button" class="btn btn--ghost" id="preset-detail-cancel">关闭</button>
+      <button type="button" class="btn btn--accent" id="preset-detail-apply" disabled>读取中…</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-log" class="dialog dialog--log">
+  <div class="dialog__body">
+    <div class="dialog__head">
+      <h2>指令日志</h2>
+      <button type="button" class="linkbtn" id="log-clear">清空</button>
+    </div>
+    <div class="log" id="log"></div>
+    <div class="dialog__actions">
+      <button type="button" class="btn btn--ghost" id="log-close">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+  // 出问题时别只是白屏：把错误摊在页面顶部
+  window.addEventListener('error', (e) => {
+    const bar = document.createElement('div');
+    bar.style.cssText = 'position:relative;z-index:60;padding:10px 22px;background:#b42318;color:#fff;font:13px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap';
+    bar.textContent = `脚本出错：${e.message}\n${e.filename || ''}:${e.lineno || ''}`;
+    document.body.prepend(bar);
+  });
+</script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

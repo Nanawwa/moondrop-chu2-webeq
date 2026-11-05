@@ -1,0 +1,7 @@
+eq.example.com {
+	reverse_proxy app:80
+	encode gzip
+	header {
+		X-Content-Type-Options nosniff
+	}
+}
