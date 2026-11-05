@@ -1,0 +1,16 @@
+# 逆向用原始 APK 与解包产物，不进仓库
+moondrop.apk
+.moondrop.apk.part.*
+x/
+hub/
+gh/
+
+# 本机/构建杂项
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+
+# 打包产物与官方参考页
+*.tar.gz
+hub_index.html
